@@ -1,7 +1,7 @@
 // OAuth 2.1 authorization server + bearer auth provider for Relay.
 // Implements the OAuthServerProvider interface that the MCP SDK expects.
 
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Request, Response } from 'express';
@@ -21,10 +21,12 @@ import type {
   OAuthClientInformationFull,
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 
-const ACCESS_TOKEN_TTL_SEC = 60 * 60 * 24; // 24 hours
-const PENDING_TTL_MS = 10 * 60 * 1000;     // 10 minutes
-const CODE_TTL_MS = 60 * 1000;             // 1 minute
+const ACCESS_TOKEN_TTL_SEC = 60 * 60 * 4;            // 4 hours
+const REFRESH_TOKEN_TTL_SEC = 60 * 60 * 24 * 90;     // 90 days
+const PENDING_TTL_MS = 10 * 60 * 1000;               // 10 minutes
+const CODE_TTL_MS = 60 * 1000;                       // 1 minute
 
 const AUTH_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS oauth_clients (
@@ -37,7 +39,9 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
 );
 
 CREATE TABLE IF NOT EXISTS oauth_codes (
-  code                  TEXT PRIMARY KEY,
+  -- code_hash is SHA-256(code); the raw code is never stored.
+  -- Symmetry with oauth_refresh_tokens — if the DB leaks, no in-flight code is usable.
+  code_hash             TEXT PRIMARY KEY,
   client_id             TEXT NOT NULL,
   redirect_uri          TEXT NOT NULL,
   code_challenge        TEXT NOT NULL,
@@ -57,6 +61,21 @@ CREATE TABLE IF NOT EXISTS oauth_pending (
   scope                 TEXT,
   expires_at            INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+  -- token_hash is SHA-256(refresh_token); the raw token is never stored.
+  token_hash    TEXT PRIMARY KEY,
+  client_id     TEXT NOT NULL,
+  scope         TEXT,
+  issued_at     INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL,
+  revoked       INTEGER NOT NULL DEFAULT 0,
+  -- When this token is rotated, rotated_to holds the hash of the replacement.
+  -- Used for reuse detection: presenting an already-rotated token is a theft signal.
+  rotated_to    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_client ON oauth_refresh_tokens(client_id);
 `;
 
 interface PendingRow {
@@ -71,7 +90,7 @@ interface PendingRow {
 }
 
 interface CodeRow {
-  code: string;
+  code_hash: string;
   client_id: string;
   redirect_uri: string;
   code_challenge: string;
@@ -88,6 +107,35 @@ interface ClientRow {
   scopes: string | null;
   registered_at: number;
   data: string;
+}
+
+interface RefreshRow {
+  token_hash: string;
+  client_id: string;
+  scope: string | null;
+  issued_at: number;
+  expires_at: number;
+  revoked: number;
+  rotated_to: string | null;
+}
+
+// SHA-256 is sufficient here: tokens are 256-bit cryptographically random
+// values, not low-entropy passwords, so dictionary/rainbow-table attacks are
+// computationally infeasible. A server-side pepper (HMAC-SHA256) would add
+// defense-in-depth against a stolen DB but requires careful key rotation
+// procedures we don't currently have. Revisit if tokens become low-entropy.
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+// Constant-time string comparison to prevent timing-based length/prefix
+// disclosure on the consent passcode. Returns false on length mismatch
+// without invoking timingSafeEqual (which throws on differing lengths).
+function constantTimeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
 }
 
 interface ProviderDeps {
@@ -160,26 +208,50 @@ function makePendingHelpers(db: Database.Database) {
 function makeCodeHelpers(db: Database.Database) {
   const insert = db.prepare<[string, string, string, string, string, string | null, number]>(
     `INSERT INTO oauth_codes
-       (code, client_id, redirect_uri, code_challenge, code_challenge_method, scope, expires_at)
+       (code_hash, client_id, redirect_uri, code_challenge, code_challenge_method, scope, expires_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   const get = db.prepare<[string], CodeRow>(
-    `SELECT code, client_id, redirect_uri, code_challenge, code_challenge_method, scope, expires_at, consumed
-       FROM oauth_codes WHERE code = ?`,
+    `SELECT code_hash, client_id, redirect_uri, code_challenge, code_challenge_method, scope, expires_at, consumed
+       FROM oauth_codes WHERE code_hash = ?`,
   );
-  const consume = db.prepare<[string]>(`UPDATE oauth_codes SET consumed = 1 WHERE code = ?`);
+  // Atomic consume: only succeeds if not yet consumed. Caller checks .changes
+  // to detect the lost-race case where another request already consumed it.
+  const consume = db.prepare<[string]>(
+    `UPDATE oauth_codes SET consumed = 1 WHERE code_hash = ? AND consumed = 0`,
+  );
   return { insert, get, consume };
+}
+
+function makeRefreshHelpers(db: Database.Database) {
+  const insert = db.prepare<[string, string, string | null, number, number]>(
+    `INSERT INTO oauth_refresh_tokens (token_hash, client_id, scope, issued_at, expires_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+  const get = db.prepare<[string], RefreshRow>(
+    `SELECT token_hash, client_id, scope, issued_at, expires_at, revoked, rotated_to
+       FROM oauth_refresh_tokens WHERE token_hash = ?`,
+  );
+  const rotate = db.prepare<[string, string]>(
+    `UPDATE oauth_refresh_tokens SET revoked = 1, rotated_to = ? WHERE token_hash = ?`,
+  );
+  const revokeAllForClient = db.prepare<[string]>(
+    `UPDATE oauth_refresh_tokens SET revoked = 1 WHERE client_id = ?`,
+  );
+  return { insert, get, rotate, revokeAllForClient };
 }
 
 class RelayProvider implements OAuthServerProvider {
   readonly clientsStore: RelayClientsStore;
   private readonly pending: ReturnType<typeof makePendingHelpers>;
   private readonly codes: ReturnType<typeof makeCodeHelpers>;
+  private readonly refresh: ReturnType<typeof makeRefreshHelpers>;
 
   constructor(private readonly deps: ProviderDeps) {
     this.clientsStore = new RelayClientsStore(deps.db);
     this.pending = makePendingHelpers(deps.db);
     this.codes = makeCodeHelpers(deps.db);
+    this.refresh = makeRefreshHelpers(deps.db);
   }
 
   async authorize(
@@ -207,7 +279,7 @@ class RelayProvider implements OAuthServerProvider {
     _client: OAuthClientInformationFull,
     authorizationCode: string,
   ): Promise<string> {
-    const row = this.codes.get.get(authorizationCode);
+    const row = this.codes.get.get(hashToken(authorizationCode));
     if (row === undefined) throw new Error('invalid authorization code');
     return row.code_challenge;
   }
@@ -219,28 +291,98 @@ class RelayProvider implements OAuthServerProvider {
     redirectUri?: string,
     _resource?: URL,
   ): Promise<OAuthTokens> {
-    const row = this.codes.get.get(authorizationCode);
-    if (row === undefined) throw new Error('invalid authorization code');
-    if (row.consumed === 1) throw new Error('authorization code already used');
-    if (row.expires_at < Date.now()) throw new Error('authorization code expired');
-    if (row.client_id !== client.client_id) throw new Error('client_id mismatch');
+    const codeHash = hashToken(authorizationCode);
+    const row = this.codes.get.get(codeHash);
+    if (row === undefined) throw new InvalidGrantError('invalid authorization code');
+    if (row.expires_at < Date.now()) throw new InvalidGrantError('authorization code expired');
+    if (row.client_id !== client.client_id) throw new InvalidGrantError('client_id mismatch');
     if (redirectUri !== undefined && redirectUri !== row.redirect_uri) {
-      throw new Error('redirect_uri mismatch');
+      throw new InvalidGrantError('redirect_uri mismatch');
     }
-    this.codes.consume.run(authorizationCode);
+    // Atomic claim — UPDATE sets consumed=1 only if it was 0. If .changes is 0,
+    // another request raced and already consumed this code.
+    const result = this.codes.consume.run(codeHash);
+    if (result.changes === 0) {
+      throw new InvalidGrantError('authorization code already used');
+    }
+
+    const accessToken = await this.mintAccessToken(client.client_id, row.scope ?? undefined);
+    const refreshToken = this.issueRefreshToken(client.client_id, row.scope);
+    const tokens: OAuthTokens = {
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: ACCESS_TOKEN_TTL_SEC,
+      refresh_token: refreshToken,
+    };
+    if (row.scope !== null) tokens.scope = row.scope;
+    return tokens;
+  }
+
+  async exchangeRefreshToken(
+    client: OAuthClientInformationFull,
+    refreshToken: string,
+    _scopes?: string[],
+    _resource?: URL,
+  ): Promise<OAuthTokens> {
+    const presentedHash = hashToken(refreshToken);
+    const row = this.refresh.get.get(presentedHash);
+    if (row === undefined) {
+      throw new InvalidGrantError('invalid refresh token');
+    }
+
+    // Reuse detection: a token that was already rotated (revoked + has rotated_to)
+    // is presented again. Treat as theft and revoke every refresh token for this
+    // client per OAuth 2.1 §6.1.
+    if (row.revoked === 1) {
+      this.refresh.revokeAllForClient.run(row.client_id);
+      throw new InvalidGrantError('refresh token reuse detected; all sessions revoked');
+    }
+
+    if (row.expires_at < Date.now()) {
+      throw new InvalidGrantError('refresh token expired');
+    }
+    if (row.client_id !== client.client_id) {
+      throw new InvalidGrantError('client_id mismatch');
+    }
+
+    // Rotate atomically: insert the new token and mark the old one rotated.
+    const newRefreshToken = randomBytes(32).toString('base64url');
+    const newHash = hashToken(newRefreshToken);
+    const now = Date.now();
+    const txn = this.deps.db.transaction(() => {
+      this.refresh.insert.run(
+        newHash,
+        row.client_id,
+        row.scope,
+        now,
+        now + REFRESH_TOKEN_TTL_SEC * 1000,
+      );
+      this.refresh.rotate.run(newHash, presentedHash);
+    });
+    txn();
 
     const accessToken = await this.mintAccessToken(client.client_id, row.scope ?? undefined);
     const tokens: OAuthTokens = {
       access_token: accessToken,
       token_type: 'Bearer',
       expires_in: ACCESS_TOKEN_TTL_SEC,
+      refresh_token: newRefreshToken,
     };
     if (row.scope !== null) tokens.scope = row.scope;
     return tokens;
   }
 
-  async exchangeRefreshToken(): Promise<OAuthTokens> {
-    throw new Error('refresh tokens not supported');
+  private issueRefreshToken(clientId: string, scope: string | null): string {
+    const token = randomBytes(32).toString('base64url');
+    const now = Date.now();
+    this.refresh.insert.run(
+      hashToken(token),
+      clientId,
+      scope,
+      now,
+      now + REFRESH_TOKEN_TTL_SEC * 1000,
+    );
+    return token;
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
@@ -268,7 +410,7 @@ class RelayProvider implements OAuthServerProvider {
     }
     const code = randomBytes(24).toString('base64url');
     this.codes.insert.run(
-      code,
+      hashToken(code),
       row.client_id,
       row.redirect_uri,
       row.code_challenge,
@@ -447,7 +589,7 @@ export function openAuthSubsystem(opts: {
           res.status(404).type('html').send(renderMessagePage('Expired', 'This consent session is invalid or expired.'));
           return;
         }
-        if (passcode !== adminPasscode) {
+        if (!constantTimeEqual(passcode, adminPasscode)) {
           res.status(401).type('html').send(renderConsentPage({ ...pending, sessionId: session, formAction: consentPath, error: 'Wrong passcode.' }));
           return;
         }
