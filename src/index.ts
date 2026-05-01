@@ -109,7 +109,19 @@ app.post(mcpPath, bearer, async (req: Request, res: Response) => {
     return;
   }
 
-  if (sessionId === undefined && isInitializeRequest(req.body)) {
+  // Stale session id (e.g. server restart cleared the in-memory transports map).
+  // MCP Streamable HTTP spec requires 404 here so the client SDK discards the
+  // session and reinitializes on the next request instead of looping on errors.
+  if (sessionId !== undefined) {
+    res.status(404).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'Session not found' },
+      id: null,
+    });
+    return;
+  }
+
+  if (isInitializeRequest(req.body)) {
     const clientId = req.auth?.clientId;
     if (clientId === undefined) {
       res.status(401).json({ error: 'unauthenticated' });
@@ -143,8 +155,12 @@ app.post(mcpPath, bearer, async (req: Request, res: Response) => {
 
 app.get(mcpPath, bearer, async (req: Request, res: Response) => {
   const sessionId = req.header('mcp-session-id');
-  if (sessionId === undefined || !transports.has(sessionId)) {
+  if (sessionId === undefined) {
     res.status(400).end();
+    return;
+  }
+  if (!transports.has(sessionId)) {
+    res.status(404).end();
     return;
   }
   await transports.get(sessionId)!.handleRequest(req, res);
@@ -152,8 +168,12 @@ app.get(mcpPath, bearer, async (req: Request, res: Response) => {
 
 app.delete(mcpPath, bearer, async (req: Request, res: Response) => {
   const sessionId = req.header('mcp-session-id');
-  if (sessionId === undefined || !transports.has(sessionId)) {
+  if (sessionId === undefined) {
     res.status(400).end();
+    return;
+  }
+  if (!transports.has(sessionId)) {
+    res.status(404).end();
     return;
   }
   await transports.get(sessionId)!.handleRequest(req, res);
