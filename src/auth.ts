@@ -529,6 +529,15 @@ function openAuthDb(dbPath: string): Database.Database {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+
+  // Migration: oauth_codes used to have a `code` column (raw value); we now
+  // store SHA-256(code) in `code_hash`. Codes have a 60-second TTL so the
+  // table holds at most a few in-flight rows — safe to drop on schema change.
+  const codeColumns = db.prepare(`PRAGMA table_info('oauth_codes')`).all() as Array<{ name: string }>;
+  if (codeColumns.length > 0 && !codeColumns.some(c => c.name === 'code_hash')) {
+    db.exec(`DROP TABLE oauth_codes`);
+  }
+
   db.exec(AUTH_SCHEMA_SQL);
   return db;
 }
