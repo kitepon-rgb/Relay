@@ -1,0 +1,44 @@
+{
+  "name": "relay",
+  "version": "0.1.0",
+  "description": "MCP server that relays conversations between iPhone Claude and Claude Code projects",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/express": "2.0.0-alpha.2",
+    "better-sqlite3": "^12.9.0",
+    "express": "^5.2.1",
+    "uuid": "^14.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/uuid": "^10.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kitepon-rgb/Relay.git"
+  },
+  "homepage": "https://github.com/kitepon-rgb/Relay#readme",
+  "bugs": {
+    "url": "https://github.com/kitepon-rgb/Relay/issues"
+  }
+}
