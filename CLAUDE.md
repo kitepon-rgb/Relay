@@ -8,29 +8,34 @@ Relay は、iPhone の Claude アプリで行った会話を、ローカルの C
 
 「会話をそのまま取り込む」が要求の核。加工・要約・検索といった派生機能は別レイヤーの責務として切り出し、本体に混ぜ込まない。
 
-## アーキテクチャ（2026-05-01 確定）
+## アーキテクチャ
 
 **リポジトリ**: https://github.com/kitepon-rgb/Relay （Public）
 
 **構成**:
-- 言語: TypeScript + Node.js LTS
-- MCP SDK: 公式 `@modelcontextprotocol/sdk`、Streamable HTTP transport
-- 認証: OAuth 2.1（DCR + PKCE）、SDK の `requireBearerAuth` / `setupAuthServer` を使用
-- ストレージ: SQLite（`better-sqlite3`） + FTS5 全文検索
-- 配置: 任意の Linux サーバの `~/relay/docker-compose.yml`、リバースプロキシ（例: caddy）経由で `https://<your-host>/mcp` に公開
+- 言語: TypeScript + Node.js 22 LTS（ESM）
+- MCP SDK: 公式 `@modelcontextprotocol/sdk`、Streamable HTTP transport（個別 handler を `metadataHandler` / `authorizationHandler` / `tokenHandler` / `clientRegistrationHandler` で custom path に mount。`mcpAuthRouter` の root 固定問題を回避）
+- 認証: OAuth 2.1 — DCR + PKCE + **refresh token + rotation + reuse detection**（自前 `OAuthServerProvider` 実装、HS256 JWT を `jose` で署名）
+- ストレージ: SQLite（`better-sqlite3`） + FTS5 全文検索、append-only。token / code は SHA-256 ハッシュで保存（生値は never on disk）
+- 配置: Linux サーバの `~/relay/docker-compose.yml`、リバースプロキシ（caddy 等）経由で公開。**専用サブドメイン推奨**、X-MCP のような既存サービスと同居する場合のみパスベースで分離
 
 **識別子の 3 軸**:
 - `source`: OAuth client_id から逆引き（自動付与、書く側 Claude は触れない）
 - `title`: 書く側 Claude が会話内容から生成（日付込み推奨）
 - `id`: サーバー採番の UUID v7
 
-**MCP ツール（6 つ、3 系統）**:
+**MCP ツール（7 つ、3 系統）**:
 - 書き込み: `append`
 - topic 駆動: `list_topics`, `read_topic`
 - 検索駆動: `search`（FTS5）
 - 時系列駆動: `read_recent`
 - 個別: `read_by_id`
 - 管理: `list_sources`
+
+**Token TTL**:
+- access token: 4h（HS256 JWT）
+- refresh token: 90d（生値は SHA-256 ハッシュで `oauth_refresh_tokens` に保存）
+- 24h 強制再認可は仕様上発生しない。リフレッシュ失効まで Connector は無操作
 
 詳細は [メモリ design_decisions.md](C:/Users/kite_/.claude/projects/c--Users-kite--Documents-Program-Relay/memory/design_decisions.md) を参照。
 
@@ -83,4 +88,19 @@ npm run build
 docker compose up -d --build
 ```
 
-実装が進んだら本セクションを実コマンドに合わせて更新する。
+## 必須環境変数
+
+- `RELAY_PORT`: 内部リッスンポート
+- `RELAY_PUBLIC_MCP_URL`: 公開 MCP URL（リバースプロキシで終端）
+- `RELAY_PUBLIC_AUTH_URL`: 公開 OAuth ベース URL（同 origin、別パス）
+- `RELAY_OAUTH_SIGNING_KEY`: ≥32 文字、HS256 署名鍵（`openssl rand -base64 64`）
+- `RELAY_ADMIN_PASSCODE`: ≥8 文字、同意ページ用 passcode
+- `RELAY_DB_PATH`: SQLite ファイルパス（Docker は volume マウント）
+- `LOG_LEVEL`: `debug` / `info` / `warn` / `error`
+
+`src/config.ts` で全項目検証、欠落・不正なら起動時即 throw。フォールバック禁止原則。
+
+## デプロイパターン
+
+- **サブドメイン方式**（推奨）: `relay.example.com` → 単一 reverse_proxy ブロック、全パス root に
+- **パスベース**: `example.com/relay/*` で他 MCP と共存。`caddy.snippet` 参照、metadata は path-suffix 形式で配信

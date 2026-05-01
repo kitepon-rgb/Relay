@@ -1,23 +1,48 @@
-# Caddy snippet for Relay
+# Caddy snippets for Relay
+# ==========================================================================
+# Two layouts. Pick one based on your reverse-proxy setup.
+# ==========================================================================
+
+# --- Option 1 (recommended): dedicated subdomain ---
 #
-# Add these inside your existing site block. Relay deliberately namespaces
-# everything under /relay/ and the matching /.well-known/oauth-*-resource/
-# subpaths so it can coexist with another MCP service that already owns the
-# bare /mcp, /authorize, /token, /register, /.well-known/oauth-* paths.
+# Add a single site block. All Relay paths live at the root, so the
+# OAuth metadata documents land at the standard /.well-known/oauth-*
+# locations and there is no collision with anything else.
 #
-# Replace the IP / port if your container binds differently.
+# .env:
+#   RELAY_PUBLIC_MCP_URL=https://relay.example.com/mcp
+#   RELAY_PUBLIC_AUTH_URL=https://relay.example.com
+
+relay.example.com {
+    # security headers omitted for brevity — copy whatever your other sites use
+    reverse_proxy 127.0.0.1:18804 {
+        flush_interval -1
+    }
+}
+
+
+# --- Option 2: path-namespaced under an existing hostname ---
+#
+# Use when you cannot add DNS records or you must coexist with another MCP
+# service that already owns the bare /mcp, /authorize, /token, /register
+# and /.well-known/oauth-* paths. Drop these reverse_proxy lines into the
+# inside of your existing site block.
+#
+# .env:
+#   RELAY_PUBLIC_MCP_URL=https://example.com/relay/mcp
+#   RELAY_PUBLIC_AUTH_URL=https://example.com/relay/auth
 
 # Relay MCP endpoint (Bearer-token gated by the app itself)
-reverse_proxy /relay/mcp 192.168.1.2:18804 {
+reverse_proxy /relay/mcp 127.0.0.1:18804 {
     flush_interval -1
 }
 
 # Relay OAuth authorization-server endpoints
-reverse_proxy /relay/auth/authorize 192.168.1.2:18804
-reverse_proxy /relay/auth/token     192.168.1.2:18804
-reverse_proxy /relay/auth/register  192.168.1.2:18804
-reverse_proxy /relay/auth/consent   192.168.1.2:18804
+reverse_proxy /relay/auth/authorize 127.0.0.1:18804
+reverse_proxy /relay/auth/token     127.0.0.1:18804
+reverse_proxy /relay/auth/register  127.0.0.1:18804
+reverse_proxy /relay/auth/consent   127.0.0.1:18804
 
-# OAuth metadata documents (path-suffixed per RFC 8414 / RFC 9728)
-reverse_proxy /.well-known/oauth-protected-resource/relay/mcp  192.168.1.2:18804
-reverse_proxy /.well-known/oauth-authorization-server/relay/auth 192.168.1.2:18804
+# OAuth metadata documents (path-suffix form per RFC 8414 / RFC 9728)
+reverse_proxy /.well-known/oauth-protected-resource/relay/mcp     127.0.0.1:18804
+reverse_proxy /.well-known/oauth-authorization-server/relay/auth  127.0.0.1:18804
