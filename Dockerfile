@@ -38,6 +38,6 @@ VOLUME ["/var/lib/relay"]
 
 USER node
 
-EXPOSE 18804 18805
+EXPOSE 18804
 
 CMD ["node", "dist/index.js"]

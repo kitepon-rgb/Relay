@@ -1,5 +1,7 @@
 // Relay entry point.
-// Boots the OAuth authorization server and the MCP resource server on separate ports.
+// Single Express app on RELAY_PORT serves both the MCP resource server and
+// the OAuth authorization server, namespaced by path so it can coexist with
+// other MCPs behind the same reverse-proxy hostname.
 
 import { randomUUID } from 'node:crypto';
 import express from 'express';
@@ -7,12 +9,12 @@ import type { Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import {
-  mcpAuthRouter,
-  mcpAuthMetadataRouter,
-  getOAuthProtectedResourceMetadataUrl,
-} from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { authorizationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/authorize.js';
+import { tokenHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/token.js';
+import { clientRegistrationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/register.js';
+import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { loadConfig } from './config.js';
 import { openStorage } from './storage.js';
 import { registerTools } from './tools.js';
@@ -22,67 +24,70 @@ const config = loadConfig();
 const storage = openStorage(config.dbPath);
 console.log(`[relay] storage opened at ${config.dbPath}`);
 
+// Derived paths — all routes mount at the public path so caddy can plain-proxy.
+const mcpPath          = config.publicMcpUrl.pathname;
+const authBasePath     = config.publicAuthUrl.pathname.replace(/\/$/, '');
+const authorizePath    = `${authBasePath}/authorize`;
+const tokenPath        = `${authBasePath}/token`;
+const registerPath     = `${authBasePath}/register`;
+const consentPath      = `${authBasePath}/consent`;
+const asMetadataPath   = `/.well-known/oauth-authorization-server${authBasePath}`;
+const rsMetadataPath   = `/.well-known/oauth-protected-resource${mcpPath}`;
+
+const consentUrl = new URL(consentPath, config.publicAuthUrl);
+
 const auth = openAuthSubsystem({
   dbPath: config.dbPath,
   signingKey: config.oauthSigningKey,
-  issuer: config.authPublicUrl,
-  audience: config.mcpPublicUrl,
-  consentUrl: new URL('/consent', config.authPublicUrl),
+  issuer: config.publicAuthUrl,
+  audience: config.publicMcpUrl,
+  consentUrl,
   relayStorage: storage,
 });
 
-// --- OAuth authorization server ---
-const authApp = express();
+const app = express();
+app.use(express.json({ limit: '10mb' }));
 
-authApp.get('/healthz', (_req, res) => {
-  res.json({ ok: true, role: 'auth', publicUrl: config.authPublicUrl.href });
+// --- Health ---
+app.get('/healthz', (_req, res) => {
+  res.json({
+    ok: true,
+    mcp: config.publicMcpUrl.href,
+    auth: config.publicAuthUrl.href,
+  });
 });
 
-authApp.use(
-  mcpAuthRouter({
-    provider: auth.provider,
-    issuerUrl: config.authPublicUrl,
-    resourceServerUrl: config.mcpPublicUrl,
-    resourceName: 'Relay',
-  }),
-);
+// --- OAuth metadata (RFC 8414 + RFC 9728) ---
+const asMetadata = {
+  issuer: config.publicAuthUrl.href.replace(/\/$/, ''),
+  authorization_endpoint: new URL(authorizePath, config.publicAuthUrl).href.replace(/\/$/, ''),
+  token_endpoint: new URL(tokenPath, config.publicAuthUrl).href.replace(/\/$/, ''),
+  registration_endpoint: new URL(registerPath, config.publicAuthUrl).href.replace(/\/$/, ''),
+  response_types_supported: ['code'],
+  grant_types_supported: ['authorization_code'],
+  code_challenge_methods_supported: ['S256'],
+  token_endpoint_auth_methods_supported: ['none'],
+};
 
-auth.mountConsent(authApp, config.adminPasscode);
+const rsMetadata = {
+  resource: config.publicMcpUrl.href,
+  authorization_servers: [config.publicAuthUrl.href.replace(/\/$/, '')],
+  resource_name: 'Relay',
+};
 
-authApp.listen(config.authPort, () => {
-  console.log(`[relay] OAuth auth server listening on :${config.authPort}`);
-  console.log(`[relay] public URL: ${config.authPublicUrl.href}`);
-});
+app.use(asMetadataPath, metadataHandler(asMetadata));
+app.use(rsMetadataPath, metadataHandler(rsMetadata));
 
-// --- MCP resource server ---
-const mcpApp = express();
-mcpApp.use(express.json({ limit: '10mb' }));
+// --- OAuth endpoints ---
+app.use(registerPath, clientRegistrationHandler({ clientsStore: auth.provider.clientsStore }));
+app.use(authorizePath, authorizationHandler({ provider: auth.provider }));
+app.use(tokenPath, tokenHandler({ provider: auth.provider }));
+auth.mountConsent(app, consentPath, config.adminPasscode);
 
-mcpApp.get('/healthz', (_req, res) => {
-  res.json({ ok: true, role: 'mcp', publicUrl: config.mcpPublicUrl.href });
-});
-
-// Serve /.well-known/oauth-protected-resource/mcp so clients can discover the AS.
-mcpApp.use(
-  mcpAuthMetadataRouter({
-    resourceServerUrl: config.mcpPublicUrl,
-    oauthMetadata: {
-      issuer: config.authPublicUrl.href,
-      authorization_endpoint: new URL('/authorize', config.authPublicUrl).href,
-      token_endpoint: new URL('/token', config.authPublicUrl).href,
-      registration_endpoint: new URL('/register', config.authPublicUrl).href,
-      response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
-      code_challenge_methods_supported: ['S256'],
-      token_endpoint_auth_methods_supported: ['none'],
-    },
-    resourceName: 'Relay',
-  }),
-);
-
+// --- MCP endpoint (Bearer protected) ---
 const bearer = requireBearerAuth({
   verifier: { verifyAccessToken: token => auth.provider.verifyAccessToken(token) },
-  resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(config.mcpPublicUrl),
+  resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(config.publicMcpUrl),
 });
 
 const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -96,7 +101,7 @@ function buildServer(clientId: string): McpServer {
   return server;
 }
 
-mcpApp.post('/mcp', bearer, async (req: Request, res: Response) => {
+app.post(mcpPath, bearer, async (req: Request, res: Response) => {
   const sessionId = req.header('mcp-session-id');
 
   if (sessionId !== undefined && transports.has(sessionId)) {
@@ -136,7 +141,7 @@ mcpApp.post('/mcp', bearer, async (req: Request, res: Response) => {
   });
 });
 
-mcpApp.get('/mcp', bearer, async (req: Request, res: Response) => {
+app.get(mcpPath, bearer, async (req: Request, res: Response) => {
   const sessionId = req.header('mcp-session-id');
   if (sessionId === undefined || !transports.has(sessionId)) {
     res.status(400).end();
@@ -145,7 +150,7 @@ mcpApp.get('/mcp', bearer, async (req: Request, res: Response) => {
   await transports.get(sessionId)!.handleRequest(req, res);
 });
 
-mcpApp.delete('/mcp', bearer, async (req: Request, res: Response) => {
+app.delete(mcpPath, bearer, async (req: Request, res: Response) => {
   const sessionId = req.header('mcp-session-id');
   if (sessionId === undefined || !transports.has(sessionId)) {
     res.status(400).end();
@@ -154,9 +159,12 @@ mcpApp.delete('/mcp', bearer, async (req: Request, res: Response) => {
   await transports.get(sessionId)!.handleRequest(req, res);
 });
 
-mcpApp.listen(config.mcpPort, () => {
-  console.log(`[relay] MCP resource server listening on :${config.mcpPort}`);
-  console.log(`[relay] public URL: ${config.mcpPublicUrl.href}`);
+app.listen(config.port, () => {
+  console.log(`[relay] listening on :${config.port}`);
+  console.log(`[relay] public MCP:  ${config.publicMcpUrl.href}`);
+  console.log(`[relay] public AUTH: ${config.publicAuthUrl.href}`);
+  console.log(`[relay] AS metadata: ${asMetadataPath}`);
+  console.log(`[relay] RS metadata: ${rsMetadataPath}`);
 });
 
 function shutdown(): void {

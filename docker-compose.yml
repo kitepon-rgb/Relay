@@ -14,9 +14,9 @@ services:
     volumes:
       - relay-data:/var/lib/relay
     ports:
-      # Bind only to loopback; expose externally via Caddy reverse proxy
-      - "127.0.0.1:18804:18804"  # MCP resource server
-      - "127.0.0.1:18805:18805"  # OAuth authorization server
+      # Bind to LAN-side host IP so the existing Caddy container can reach it.
+      # Caddy on this host already proxies kitepon.dynv6.net.
+      - "192.168.1.2:18804:18804"
 
 volumes:
   relay-data:

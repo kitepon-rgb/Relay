@@ -1,0 +1,23 @@
+# Caddy snippet for Relay
+#
+# Add these inside your existing site block. Relay deliberately namespaces
+# everything under /relay/ and the matching /.well-known/oauth-*-resource/
+# subpaths so it can coexist with another MCP service that already owns the
+# bare /mcp, /authorize, /token, /register, /.well-known/oauth-* paths.
+#
+# Replace the IP / port if your container binds differently.
+
+# Relay MCP endpoint (Bearer-token gated by the app itself)
+reverse_proxy /relay/mcp 192.168.1.2:18804 {
+    flush_interval -1
+}
+
+# Relay OAuth authorization-server endpoints
+reverse_proxy /relay/auth/authorize 192.168.1.2:18804
+reverse_proxy /relay/auth/token     192.168.1.2:18804
+reverse_proxy /relay/auth/register  192.168.1.2:18804
+reverse_proxy /relay/auth/consent   192.168.1.2:18804
+
+# OAuth metadata documents (path-suffixed per RFC 8414 / RFC 9728)
+reverse_proxy /.well-known/oauth-protected-resource/relay/mcp  192.168.1.2:18804
+reverse_proxy /.well-known/oauth-authorization-server/relay/auth 192.168.1.2:18804

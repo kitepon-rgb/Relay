@@ -2,10 +2,12 @@
 // Fails fast on startup if any required value is missing — no defaults, no fallbacks.
 
 export interface Config {
-  readonly mcpPort: number;
-  readonly mcpPublicUrl: URL;
-  readonly authPort: number;
-  readonly authPublicUrl: URL;
+  /** Internal port the server listens on. */
+  readonly port: number;
+  /** Public URL where the MCP endpoint is reachable, e.g. https://example.com/relay/mcp */
+  readonly publicMcpUrl: URL;
+  /** Public base URL for the OAuth authorization server, e.g. https://example.com/relay/auth */
+  readonly publicAuthUrl: URL;
   readonly oauthSigningKey: string;
   /** Passcode the user must enter on the consent screen to approve a Connector. */
   readonly adminPasscode: string;
@@ -65,11 +67,24 @@ export function loadConfig(): Config {
     throw new ConfigError('RELAY_ADMIN_PASSCODE must be at least 8 characters');
   }
 
+  const publicMcpUrl = requireUrl('RELAY_PUBLIC_MCP_URL');
+  const publicAuthUrl = requireUrl('RELAY_PUBLIC_AUTH_URL');
+
+  if (publicMcpUrl.origin !== publicAuthUrl.origin) {
+    throw new ConfigError(
+      `RELAY_PUBLIC_MCP_URL and RELAY_PUBLIC_AUTH_URL must share the same origin (got ${publicMcpUrl.origin} vs ${publicAuthUrl.origin})`,
+    );
+  }
+  if (publicMcpUrl.pathname === publicAuthUrl.pathname) {
+    throw new ConfigError(
+      `RELAY_PUBLIC_MCP_URL and RELAY_PUBLIC_AUTH_URL must have different paths`,
+    );
+  }
+
   return {
-    mcpPort: requirePort('RELAY_PORT'),
-    mcpPublicUrl: requireUrl('RELAY_PUBLIC_URL'),
-    authPort: requirePort('RELAY_AUTH_PORT'),
-    authPublicUrl: requireUrl('RELAY_AUTH_PUBLIC_URL'),
+    port: requirePort('RELAY_PORT'),
+    publicMcpUrl,
+    publicAuthUrl,
     oauthSigningKey,
     adminPasscode,
     dbPath: requireEnv('RELAY_DB_PATH'),

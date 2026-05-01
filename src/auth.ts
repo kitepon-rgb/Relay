@@ -330,7 +330,7 @@ function escapeHtml(s: string): string {
   });
 }
 
-function renderConsentPage(opts: { clientName: string; redirectUri: string; sessionId: string; error?: string }): string {
+function renderConsentPage(opts: { clientName: string; redirectUri: string; sessionId: string; formAction: string; error?: string }): string {
   const errBlock = opts.error === undefined
     ? ''
     : `<p class="err">${escapeHtml(opts.error)}</p>`;
@@ -355,7 +355,7 @@ function renderConsentPage(opts: { clientName: string; redirectUri: string; sess
 </head>
 <body>
 <h1>Approve this Connector?</h1>
-<form method="POST" action="/consent" class="card">
+<form method="POST" action="${escapeHtml(opts.formAction)}" class="card">
   <input type="hidden" name="session" value="${escapeHtml(opts.sessionId)}" />
   <dl>
     <dt>Application</dt>
@@ -393,7 +393,8 @@ function openAuthDb(dbPath: string): Database.Database {
 
 export interface AuthSubsystem {
   readonly provider: RelayProvider;
-  mountConsent(app: express.Express, adminPasscode: string): void;
+  /** Mount /consent (GET, POST) at the given absolute path (e.g. "/relay/auth/consent"). */
+  mountConsent(app: express.Express, consentPath: string, adminPasscode: string): void;
   close(): void;
 }
 
@@ -417,10 +418,10 @@ export function openAuthSubsystem(opts: {
 
   return {
     provider,
-    mountConsent(app, adminPasscode) {
+    mountConsent(app, consentPath, adminPasscode) {
       app.use(express.urlencoded({ extended: false }));
 
-      app.get('/consent', (req: Request, res: Response) => {
+      app.get(consentPath, (req: Request, res: Response) => {
         const sessionId = req.query.session;
         if (typeof sessionId !== 'string') {
           res.status(400).type('html').send(renderMessagePage('Missing session', 'No consent session was provided.'));
@@ -431,10 +432,10 @@ export function openAuthSubsystem(opts: {
           res.status(404).type('html').send(renderMessagePage('Expired', 'This consent session is invalid or expired. Restart the connector setup from the client app.'));
           return;
         }
-        res.type('html').send(renderConsentPage({ ...pending, sessionId }));
+        res.type('html').send(renderConsentPage({ ...pending, sessionId, formAction: consentPath }));
       });
 
-      app.post('/consent', async (req: Request, res: Response) => {
+      app.post(consentPath, async (req: Request, res: Response) => {
         const session = (req.body as { session?: unknown })?.session;
         const passcode = (req.body as { passcode?: unknown })?.passcode;
         if (typeof session !== 'string' || typeof passcode !== 'string') {
@@ -447,7 +448,7 @@ export function openAuthSubsystem(opts: {
           return;
         }
         if (passcode !== adminPasscode) {
-          res.status(401).type('html').send(renderConsentPage({ ...pending, sessionId: session, error: 'Wrong passcode.' }));
+          res.status(401).type('html').send(renderConsentPage({ ...pending, sessionId: session, formAction: consentPath, error: 'Wrong passcode.' }));
           return;
         }
         const { redirectTo } = await provider.approveConsent(session);
