@@ -313,8 +313,14 @@ export function openStorage(dbPath: string): Storage {
         const rows = db.prepare<typeof params, EntryRow>(sql).all(...params);
         return rows.map(rowToEntry);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.toLowerCase().includes('fts5')) {
+        // The only user-controlled input here is opts.query; SQLite reports
+        // FTS5 syntax problems as the generic SQLITE_ERROR code. Storage-level
+        // failures (SQLITE_CORRUPT, SQLITE_IOERR, SQLITE_BUSY, …) surface with
+        // distinct codes and are propagated raw so they do not get
+        // misclassified as user-query errors.
+        const code = (err as { code?: string }).code;
+        if (code === 'SQLITE_ERROR') {
+          const message = err instanceof Error ? err.message : String(err);
           throw new RelayError('FTS_INVALID_QUERY', message, { query: opts.query });
         }
         throw err;
