@@ -6,6 +6,22 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { v7 as uuidv7 } from 'uuid';
 
+/**
+ * Domain-level error with a machine-readable code. Tool handlers map these
+ * to MCP responses with isError=true so callers can branch on err.code
+ * instead of pattern-matching free-form messages.
+ */
+export class RelayError extends Error {
+  readonly code: string;
+  readonly data?: Record<string, unknown>;
+  constructor(code: string, message: string, data?: Record<string, unknown>) {
+    super(message);
+    this.name = 'RelayError';
+    this.code = code;
+    this.data = data;
+  }
+}
+
 export interface Entry {
   readonly id: string;
   readonly createdAt: number;
@@ -85,7 +101,7 @@ CREATE TABLE IF NOT EXISTS clients (
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts
-  USING fts5(content, title, content='entries', content_rowid='rowid');
+  USING fts5(content, title, content='entries', content_rowid='rowid', tokenize='trigram');
 
 CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
   INSERT INTO entries_fts(rowid, content, title)
@@ -99,6 +115,30 @@ export function openStorage(dbPath: string): Storage {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
+
+  // FTS5 tokenizer migration. The original schema used the unicode61 default,
+  // which does not segment Japanese (or other CJK) text — a Japanese conversation
+  // would be indexed as one giant token per sentence, breaking search. We now
+  // use the built-in trigram tokenizer, which handles JP / EN / mixed-language
+  // queries uniformly. Existing databases need their FTS table rebuilt.
+  const ftsRow = db
+    .prepare<[], { sql: string }>(`SELECT sql FROM sqlite_master WHERE name='entries_fts'`)
+    .get();
+  if (ftsRow !== undefined && !/tokenize\s*=\s*['"]?trigram['"]?/i.test(ftsRow.sql)) {
+    console.log('[relay] migrating FTS5 to trigram tokenizer');
+    db.exec(`
+      BEGIN;
+      DROP TABLE entries_fts;
+      CREATE VIRTUAL TABLE entries_fts USING fts5(
+        content, title,
+        content='entries',
+        content_rowid='rowid',
+        tokenize='trigram'
+      );
+      INSERT INTO entries_fts(entries_fts) VALUES('rebuild');
+      COMMIT;
+    `);
+  }
 
   const insertStmt = db.prepare<[string, number, string, string, string, string | null]>(
     `INSERT INTO entries (id, created_at, source, title, content, meta)
@@ -235,7 +275,11 @@ export function openStorage(dbPath: string): Storage {
       if (opts.beforeId !== undefined) {
         const anchor = getByIdStmt.get(opts.beforeId);
         if (anchor === undefined) {
-          throw new Error(`readTopic: beforeId ${opts.beforeId} not found`);
+          throw new RelayError(
+            'BEFORE_ID_NOT_FOUND',
+            `beforeId ${opts.beforeId} not found`,
+            { beforeId: opts.beforeId },
+          );
         }
         const rows = readTopicBeforeStmt.all(opts.title, anchor.created_at, anchor.created_at, opts.beforeId, limit);
         return rows.map(rowToEntry);
@@ -265,8 +309,16 @@ export function openStorage(dbPath: string): Storage {
          WHERE entries_fts MATCH ?${where}
          ORDER BY e.created_at DESC, e.id DESC
          LIMIT ?`;
-      const rows = db.prepare<typeof params, EntryRow>(sql).all(...params);
-      return rows.map(rowToEntry);
+      try {
+        const rows = db.prepare<typeof params, EntryRow>(sql).all(...params);
+        return rows.map(rowToEntry);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.toLowerCase().includes('fts5')) {
+          throw new RelayError('FTS_INVALID_QUERY', message, { query: opts.query });
+        }
+        throw err;
+      }
     },
 
     readRecent(opts) {

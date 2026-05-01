@@ -3,6 +3,7 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { RelayError } from './storage.js';
 import type { Entry, Storage, TopicSummary, SourceSummary } from './storage.js';
 
 interface RegisterOptions {
@@ -45,6 +46,22 @@ function asJsonContent(payload: unknown) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
   };
+}
+
+function asErrorContent(code: string, message: string, data?: Record<string, unknown>) {
+  const body: Record<string, unknown> = { error: code, message };
+  if (data !== undefined) body.data = data;
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(body, null, 2) }],
+    isError: true,
+  };
+}
+
+function mapRelayError(err: unknown) {
+  if (err instanceof RelayError) {
+    return asErrorContent(err.code, err.message, err.data);
+  }
+  throw err;
 }
 
 export function registerTools(server: McpServer, opts: RegisterOptions): void {
@@ -110,8 +127,12 @@ export function registerTools(server: McpServer, opts: RegisterOptions): void {
       },
     },
     async ({ title, limit, before_id }) => {
-      const entries = storage.readTopic({ title, limit, beforeId: before_id });
-      return asJsonContent({ entries: entries.map(entryToJson) });
+      try {
+        const entries = storage.readTopic({ title, limit, beforeId: before_id });
+        return asJsonContent({ entries: entries.map(entryToJson) });
+      } catch (err) {
+        return mapRelayError(err);
+      }
     },
   );
 
@@ -131,8 +152,12 @@ export function registerTools(server: McpServer, opts: RegisterOptions): void {
       },
     },
     async ({ query, title, source, limit }) => {
-      const entries = storage.search({ query, title, source, limit });
-      return asJsonContent({ entries: entries.map(entryToJson) });
+      try {
+        const entries = storage.search({ query, title, source, limit });
+        return asJsonContent({ entries: entries.map(entryToJson) });
+      } catch (err) {
+        return mapRelayError(err);
+      }
     },
   );
 
@@ -167,10 +192,7 @@ export function registerTools(server: McpServer, opts: RegisterOptions): void {
     async ({ id }) => {
       const entry = storage.getEntryById(id);
       if (entry === null) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', id }) }],
-          isError: true,
-        };
+        return asErrorContent('NOT_FOUND', `entry ${id} not found`, { id });
       }
       return asJsonContent({ entry: entryToJson(entry) });
     },

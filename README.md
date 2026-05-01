@@ -64,7 +64,7 @@ flowchart LR
 
 - **Transport**: Streamable HTTP, per the MCP spec
 - **Authentication**: OAuth 2.1 with Dynamic Client Registration, PKCE, and refresh-token rotation with reuse detection
-- **Storage**: SQLite + FTS5, append-only. Tokens and authorization codes are stored as `SHA-256(secret)`; the wire-format secret never touches disk
+- **Storage**: SQLite + FTS5 with the `trigram` tokenizer (so Japanese, English, and mixed-language queries all match cleanly), append-only. Tokens and authorization codes are stored as `SHA-256(secret)`; the wire-format secret never touches disk
 - **Identity model**: every entry carries three independent axes
   - `source` — which device wrote it (derived from OAuth `client_id`)
   - `title` — a human-meaningful label the writing Claude generates
@@ -82,7 +82,23 @@ flowchart LR
 | `read_by_id` | Fetch one entry |
 | `list_sources` | List registered Connectors |
 
-There is intentionally **no** edit or delete tool. Entries are append-only. To remove something, edit the SQLite file directly.
+There is intentionally **no** edit or delete tool. Entries are append-only. To withdraw a wrong entry the supported pattern is a [retraction append](#retracting-a-wrong-entry); for hard removal (e.g. compliance) edit the SQLite file directly.
+
+#### Tool error codes
+
+When a call fails for a domain-level reason the response carries `isError: true` and a structured payload:
+
+```json
+{ "error": "FTS_INVALID_QUERY", "message": "...", "data": { "query": "..." } }
+```
+
+| Code | When |
+|---|---|
+| `NOT_FOUND` | `read_by_id` with an unknown id |
+| `BEFORE_ID_NOT_FOUND` | `read_topic` paginating past a missing anchor |
+| `FTS_INVALID_QUERY` | `search` with a malformed FTS5 query |
+
+Transport-level failures (auth, missing session, rate limits) come back as JSON-RPC errors / HTTP status codes per the MCP spec.
 
 ### OAuth handshake
 
@@ -200,6 +216,22 @@ The TLS certificate served by Caddy will still validate because SNI matches the 
 - **Revoke a connector**: `UPDATE oauth_refresh_tokens SET revoked = 1 WHERE client_id = '<client_id>';` then on the next refresh the connector is forced through the consent flow again.
 - **Rotate the signing key**: change `RELAY_OAUTH_SIGNING_KEY` and restart. All existing access tokens become invalid; refresh tokens still work and produce new access tokens signed with the new key.
 - **Change the consent passcode**: change `RELAY_ADMIN_PASSCODE` and restart. Existing refresh tokens are unaffected; only future consent prompts are gated by the new value.
+
+### Retracting a wrong entry
+
+The store is append-only by design — once written, content stays in the index and in any backup. To withdraw an entry you regret writing, append a new entry whose `meta` references the wrong id:
+
+```json
+{
+  "title": "<original title>",
+  "content": "Retracts the previous entry: <reason>.",
+  "meta": { "retracts": "019de284-ea45-7249-b65a-68dfcc664d2e" }
+}
+```
+
+The reading Claude on either side is expected to honor retractions: when both the original and a later retraction are visible, treat the original as withdrawn.
+
+This is a forward-only correction, not a delete. For physical removal (compliance, accidental secrets) edit the SQLite file directly and rebuild the FTS index with `INSERT INTO entries_fts(entries_fts) VALUES('rebuild');`.
 
 ## Design principles
 

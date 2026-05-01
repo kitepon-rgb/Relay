@@ -64,7 +64,7 @@ flowchart LR
 
 - **トランスポート**: Streamable HTTP（MCP 仕様）
 - **認証**: OAuth 2.1 + Dynamic Client Registration + PKCE + リフレッシュトークン rotation（reuse 検知付き）
-- **ストレージ**: SQLite + FTS5、append-only。トークンと認可コードは `SHA-256(secret)` で保存、生値はディスクに残さない
+- **ストレージ**: SQLite + FTS5（トークナイザは `trigram` を採用、日本語・英語・混在クエリを同じ精度で扱う）、append-only。トークンと認可コードは `SHA-256(secret)` で保存、生値はディスクに残さない
 - **識別子の 3 軸**: `source`（書き込んだ端末 = OAuth `client_id` から逆引き） / `title`（書き込み側の Claude が生成） / `id`（サーバ採番の UUID v7）
 
 ### MCP ツール
@@ -79,7 +79,37 @@ flowchart LR
 | `read_by_id` | 単一エントリ取得 |
 | `list_sources` | 登録済み Connector 一覧 |
 
-意図的に **edit / delete は無い**。append-only。消したくなったら SQLite ファイルを直接編集する。
+意図的に **edit / delete は無い**。append-only。誤って書いてしまったエントリは [retraction append](#誤投稿の取り下げ-retraction) で取り下げる。物理削除（コンプラ用途等）は SQLite を直接編集。
+
+#### ツールのエラーコード
+
+ドメインレベルの失敗時は `isError: true` と構造化ペイロードを返す:
+
+```json
+{ "error": "FTS_INVALID_QUERY", "message": "...", "data": { "query": "..." } }
+```
+
+| コード | 発生条件 |
+|---|---|
+| `NOT_FOUND` | `read_by_id` で未知の id |
+| `BEFORE_ID_NOT_FOUND` | `read_topic` の anchor が見つからない |
+| `FTS_INVALID_QUERY` | `search` の FTS5 クエリが不正 |
+
+認証・セッション・ステータス系のトランスポート層エラーは MCP 仕様通り JSON-RPC エラー / HTTP ステータスで返る。
+
+### 誤投稿の取り下げ (retraction)
+
+ストアは append-only なので、書き込んだ内容はインデックスとバックアップに残り続ける。誤った内容を取り下げたいときは、対象 id を `meta` に書いた新しいエントリを append する:
+
+```json
+{
+  "title": "<元のタイトル>",
+  "content": "Retracts the previous entry: <理由>.",
+  "meta": { "retracts": "019de284-ea45-7249-b65a-68dfcc664d2e" }
+}
+```
+
+両端の Claude は retraction を尊重する想定: 元エントリと取り下げエントリの両方が見えるときは、元を「取り下げ済み」として扱う。物理削除ではなく前向きの訂正。コンプラ用途や事故的な秘匿情報の混入には SQLite を直接編集し、`INSERT INTO entries_fts(entries_fts) VALUES('rebuild');` で FTS を再構築する。
 
 ## クイックスタート
 
