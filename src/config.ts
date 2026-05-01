@@ -7,6 +7,8 @@ export interface Config {
   readonly authPort: number;
   readonly authPublicUrl: URL;
   readonly oauthSigningKey: string;
+  /** Passcode the user must enter on the consent screen to approve a Connector. */
+  readonly adminPasscode: string;
   readonly dbPath: string;
   readonly logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -58,12 +60,18 @@ export function loadConfig(): Config {
     throw new ConfigError('RELAY_OAUTH_SIGNING_KEY must be at least 32 characters');
   }
 
+  const adminPasscode = requireEnv('RELAY_ADMIN_PASSCODE');
+  if (adminPasscode.length < 8) {
+    throw new ConfigError('RELAY_ADMIN_PASSCODE must be at least 8 characters');
+  }
+
   return {
     mcpPort: requirePort('RELAY_PORT'),
     mcpPublicUrl: requireUrl('RELAY_PUBLIC_URL'),
     authPort: requirePort('RELAY_AUTH_PORT'),
     authPublicUrl: requireUrl('RELAY_AUTH_PUBLIC_URL'),
     oauthSigningKey,
+    adminPasscode,
     dbPath: requireEnv('RELAY_DB_PATH'),
     logLevel: requireLogLevel('LOG_LEVEL'),
   };
