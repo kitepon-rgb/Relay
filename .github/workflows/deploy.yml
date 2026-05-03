@@ -23,4 +23,18 @@ jobs:
           echo "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST"
+          # Some Azure-hosted runner subnets cannot reach the home server's
+          # public IP (intermittent geo/ISP routing issues), retry up to 3
+          # times with backoff before giving up.
+          for attempt in 1 2 3; do
+            if ssh -i ~/.ssh/id_ed25519 \
+                   -o StrictHostKeyChecking=accept-new \
+                   -o ConnectTimeout=15 \
+                   "$DEPLOY_USER@$DEPLOY_HOST"; then
+              exit 0
+            fi
+            echo "SSH attempt $attempt failed, retrying in 30s..."
+            sleep 30
+          done
+          echo "SSH failed after 3 attempts"
+          exit 1
