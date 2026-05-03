@@ -36,6 +36,7 @@ Relay は、iPhone の Claude アプリで行った会話を、ローカルの C
 - 雑記・要約でよい場合 → `append`（content は自由文 1 本）
 - 会話の生流れを忠実に残す場合 → `append_log`（turns: 配列で原文ターンごとに渡す。要約禁止。構造そのものが要約余地を狭める唯一の実効的圧力）
 - 受信側は `read_topic` / `search` で取り出した時、`append_log` のエントリは content が `user: ...\n\nassistant: ...` の自然テキスト連結として読める。turn 構造が必要なら `meta.turns` を参照
+- ターン数・文字数とも明示的な上限なし。実質天井は HTTP body 10MB（`src/index.ts` の `express.json({ limit: '10mb' })`）。長会話は同 title で複数 `append_log` に分割可
 
 **Token TTL**:
 - access token: 4h（HS256 JWT）

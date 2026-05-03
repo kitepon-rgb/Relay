@@ -85,6 +85,8 @@ flowchart LR
 
 `append_log` stores `content` as a natural-text join (`user: ...\n\nassistant: ...`) so existing read tools display it cleanly with no JSON noise. The structured turn array is preserved under `meta.turns` for callers that need it.
 
+**Limits**: there is no per-turn or per-call turn-count cap on either tool — the only ceiling is the HTTP request body limit of **10 MB** ([src/index.ts](src/index.ts) `express.json({ limit: '10mb' })`). For longer conversations, split into multiple `append_log` calls under the same title; `read_topic` returns them in chronological order. The practical bottleneck is the writing-side LLM's context window, not Relay.
+
 There is intentionally **no** edit or delete tool. Entries are append-only. To withdraw a wrong entry the supported pattern is a [retraction append](#retracting-a-wrong-entry); for hard removal (e.g. compliance) edit the SQLite file directly.
 
 #### Tool error codes

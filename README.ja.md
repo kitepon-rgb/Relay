@@ -82,6 +82,8 @@ flowchart LR
 
 `append_log` は `content` に `user: ...\n\nassistant: ...` 形式で自然テキスト連結を入れるので、既存の取り出し系ツールは JSON ノイズ無しで普通に表示できる。構造化されたターン配列は `meta.turns` に保持される。
 
+**制限**: ターン数・1 ターンあたりの文字数とも明示的な上限なし。実質天井は HTTP リクエスト body の **10 MB**（[src/index.ts](src/index.ts) の `express.json({ limit: '10mb' })`）。それを超える長会話は同 title で `append_log` を複数回に分割すれば良い（`read_topic` で時系列に取り直せる）。実運用のボトルネックは Relay 側ではなく、書く側 LLM の文脈窓。
+
 意図的に **edit / delete は無い**。append-only。誤って書いてしまったエントリは [retraction append](#誤投稿の取り下げ-retraction) で取り下げる。物理削除（コンプラ用途等）は SQLite を直接編集。
 
 #### ツールのエラーコード
