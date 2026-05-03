@@ -90,7 +90,8 @@ npm test
 # ビルド
 npm run build
 
-# Docker ビルド + 起動（デプロイ先サーバ上）
+# Docker ビルド + 起動（デプロイ先サーバ上で手動実行する場合）
+# 通常は main への push で GitHub Actions が自動実行する（.github/workflows/deploy.yml）
 docker compose up -d --build
 ```
 
@@ -110,3 +111,12 @@ docker compose up -d --build
 
 - **サブドメイン方式**（推奨）: `relay.example.com` → 単一 reverse_proxy ブロック、全パス root に
 - **パスベース**: `example.com/relay/*` で他 MCP と共存。`caddy.snippet` 参照、metadata は path-suffix 形式で配信
+
+## 自動デプロイ
+
+`main` に push が入ると GitHub Actions（`.github/workflows/deploy.yml`）がデプロイ先サーバへ SSH し、`git pull && docker compose up -d --build` を実行する。
+
+- 認証は GitHub Secret `DEPLOY_SSH_KEY` / `DEPLOY_HOST` / `DEPLOY_USER` 経由
+- サーバ側 `~/.ssh/authorized_keys` で `command="cd ~/relay && git pull && docker compose up -d --build",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <pubkey>` の縛り付き → 鍵が漏れてもこのコマンド以外は実行不可能
+- `concurrency: { group: deploy }` で連続 push 時の race を回避
+- 手動実行: `gh workflow run deploy --repo kitepon-rgb/Relay`

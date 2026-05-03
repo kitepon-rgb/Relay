@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New tool `append_log` for storing conversations as a structured array of turns. Each turn is `{ role: 'user' | 'assistant' | 'system' | 'tool', text: string }`; the structure is what closes the summarization loophole that a single `content` string left open. The handler joins turns into a natural-text `content` (so existing read tools display logs cleanly with no JSON noise) and preserves the structured turns under `meta.turns` for callers that need them.
 - `entries` table gained a `kind` column (`free` | `log`). Existing rows are backfilled with `'free'` once on first startup; the column has no DB-level CHECK or NOT NULL because SQLite cannot add those after the fact, so the zod enum on `insertEntry` is the sole guarantor going forward. `kind` is internal-only — no existing tool's response shape changes.
 - `Storage.getEntryKindForTest(id)` is exposed on the interface for test verification of the new column. Production code does not call it.
+- Auto-deploy on push to `main` via `.github/workflows/deploy.yml`. The workflow SSHes into the deploy host with a dedicated ed25519 key; the server-side `authorized_keys` entry pins the key to exactly `cd ~/relay && git pull && docker compose up -d --build` via OpenSSH `command=`, so a leaked key only authorizes a deploy of the current `main`. Concurrency group `deploy` serializes back-to-back pushes so they do not race on `docker compose up`.
 
 ### Changed
 
