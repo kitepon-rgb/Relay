@@ -3,6 +3,7 @@
 # Relay
 
 [![typecheck](https://github.com/kitepon-rgb/Relay/actions/workflows/typecheck.yml/badge.svg)](https://github.com/kitepon-rgb/Relay/actions/workflows/typecheck.yml)
+[![deploy](https://github.com/kitepon-rgb/Relay/actions/workflows/deploy.yml/badge.svg)](https://github.com/kitepon-rgb/Relay/actions/workflows/deploy.yml)
 [![license](https://img.shields.io/github/license/kitepon-rgb/Relay)](LICENSE)
 [![node](https://img.shields.io/badge/node-22%20LTS-brightgreen)](https://nodejs.org)
 [![mcp](https://img.shields.io/badge/MCP-Streamable%20HTTP-blue)](https://modelcontextprotocol.io)
