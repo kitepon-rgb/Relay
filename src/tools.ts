@@ -6,6 +6,32 @@ import { z } from 'zod';
 import { RelayError } from './storage.js';
 import type { Entry, Storage, TopicSummary, SourceSummary } from './storage.js';
 
+export const appendLogInputShape = {
+  title: z.string().min(1).describe('Human-readable title; include the date when relevant'),
+  turns: z.array(z.object({
+    role: z.enum(['user', 'assistant', 'system', 'tool']),
+    text: z.string().min(1),
+  })).min(1).describe('Conversation turns in chronological order; each text must be a verbatim copy of the original utterance'),
+  meta: z.record(z.string(), z.unknown()).optional().describe('Optional structured metadata (free-form JSON object); turns are auto-merged into meta.turns'),
+};
+export const appendLogInputObject = z.object(appendLogInputShape);
+type AppendLogInput = z.infer<typeof appendLogInputObject>;
+
+export function buildAppendLogHandler(deps: { storage: Storage; resolveSource: () => string }) {
+  return async ({ title, turns, meta }: AppendLogInput) => {
+    const content = turns.map(t => `${t.role}: ${t.text}`).join('\n\n');
+    const mergedMeta = { ...(meta ?? {}), turns };
+    const entry = deps.storage.insertEntry({
+      source: deps.resolveSource(),
+      title,
+      content,
+      meta: mergedMeta,
+      kind: 'log',
+    });
+    return asJsonContent({ ok: true, entry: entryToJson(entry) });
+  };
+}
+
 interface RegisterOptions {
   readonly storage: Storage;
   /** Returns the OAuth client_id (or stub) for the current request. */
@@ -72,9 +98,8 @@ export function registerTools(server: McpServer, opts: RegisterOptions): void {
     {
       title: 'Append a conversation snippet',
       description:
-        '会話のスニペットを保存します。' +
-        'title は人間が後で見て分かる短い見出し（日付＋トピック推奨、例: "2026-05-01 Relay 設計議論"）。' +
-        'content は会話本文をできるだけ忠実に。source は呼び出し元から自動付与されるので渡さない。',
+        '会話の要点メモや雑な記録を保存します。要約・抜粋でよい場合に使う。' +
+        '会話の生流れを忠実に残したい場合は、このツールではなく append_log を使うこと。',
       inputSchema: {
         title: z.string().min(1).describe('Human-readable title; include the date when relevant'),
         content: z.string().min(1).describe('Raw conversation text to preserve'),
@@ -90,9 +115,22 @@ export function registerTools(server: McpServer, opts: RegisterOptions): void {
         title,
         content,
         meta,
+        kind: 'free',
       });
       return asJsonContent({ ok: true, entry: entryToJson(entry) });
     },
+  );
+
+  server.registerTool(
+    'append_log',
+    {
+      title: 'Append a structured conversation log',
+      description:
+        '会話の生流れをターン単位で記録します。各 turn の text は会話原文。' +
+        '要約・抜粋用途は append を使うこと。順序は古い→新しい。',
+      inputSchema: appendLogInputShape,
+    },
+    buildAppendLogHandler({ storage, resolveSource }),
   );
 
   server.registerTool(

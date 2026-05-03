@@ -21,7 +21,7 @@ You run Relay on a server you control. You register it as a Custom Connector in 
 
 > "Save this conversation to Relay."
 
-Claude transcribes the chat, generates a title, calls Relay's `append` tool. Done.
+Claude transcribes the chat, generates a title, calls Relay's `append` (for summaries) or `append_log` (for verbatim turns). Done.
 
 **On the desktop, in Claude Code**
 
@@ -74,13 +74,16 @@ flowchart LR
 
 | Tool | Purpose |
 |---|---|
-| `append` | Write a conversation snippet (title + content) |
+| `append` | Write a conversation snippet as freeform text (title + content). For summaries / notes |
+| `append_log` | Write a verbatim conversation log as a structured turn array. Each `text` is the original utterance — the structure itself closes the summarization loophole that a single string leaves open |
 | `list_topics` | Browse titles, optionally by source / since |
 | `read_topic` | Fetch entries under a title, newest first |
 | `search` | Full-text search across content + title (FTS5) |
 | `read_recent` | Time-ordered view across everything |
 | `read_by_id` | Fetch one entry |
 | `list_sources` | List registered Connectors |
+
+`append_log` stores `content` as a natural-text join (`user: ...\n\nassistant: ...`) so existing read tools display it cleanly with no JSON noise. The structured turn array is preserved under `meta.turns` for callers that need it.
 
 There is intentionally **no** edit or delete tool. Entries are append-only. To withdraw a wrong entry the supported pattern is a [retraction append](#retracting-a-wrong-entry); for hard removal (e.g. compliance) edit the SQLite file directly.
 

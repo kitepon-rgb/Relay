@@ -46,8 +46,10 @@ export interface SourceSummary {
   readonly sourceLabel: string | null;
 }
 
+export type EntryKind = 'free' | 'log';
+
 export interface Storage {
-  insertEntry(input: { source: string; title: string; content: string; meta?: Record<string, unknown> }): Entry;
+  insertEntry(input: { source: string; title: string; content: string; meta?: Record<string, unknown>; kind: EntryKind }): Entry;
   getEntryById(id: string): Entry | null;
   listTopics(opts?: { source?: string; since?: number }): TopicSummary[];
   readTopic(opts: { title: string; limit?: number; beforeId?: string }): Entry[];
@@ -56,6 +58,7 @@ export interface Storage {
   listSources(): SourceSummary[];
   registerClient(input: { clientId: string; sourceLabel: string }): void;
   touchClient(clientId: string): void;
+  getEntryKindForTest(id: string): string | null;
   close(): void;
 }
 
@@ -86,7 +89,8 @@ CREATE TABLE IF NOT EXISTS entries (
   source      TEXT NOT NULL,
   title       TEXT NOT NULL,
   content     TEXT NOT NULL,
-  meta        TEXT
+  meta        TEXT,
+  kind        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_entries_title       ON entries(title);
@@ -140,9 +144,32 @@ export function openStorage(dbPath: string): Storage {
     `);
   }
 
-  const insertStmt = db.prepare<[string, number, string, string, string, string | null]>(
-    `INSERT INTO entries (id, created_at, source, title, content, meta)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+  // kind column migration. Existing rows are backfilled with 'free' as a
+  // one-time labeling decision (legacy data is, by definition, what the
+  // freeform append tool produced). The column has no DB-level CHECK or
+  // NOT NULL because SQLite cannot add those after the fact; the zod enum
+  // on insertEntry is the sole guarantor going forward.
+  const hasKind = db
+    .prepare<[], { name: string }>(`PRAGMA table_info(entries)`)
+    .all()
+    .some(row => row.name === 'kind');
+  if (!hasKind) {
+    console.log('[relay] adding kind column to entries');
+    db.exec(`
+      BEGIN;
+      ALTER TABLE entries ADD COLUMN kind TEXT;
+      UPDATE entries SET kind = 'free';
+      COMMIT;
+    `);
+  }
+
+  const insertStmt = db.prepare<[string, number, string, string, string, string | null, string]>(
+    `INSERT INTO entries (id, created_at, source, title, content, meta, kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  const getKindStmt = db.prepare<[string], { kind: string | null }>(
+    `SELECT kind FROM entries WHERE id = ?`,
   );
 
   const getByIdStmt = db.prepare<[string], EntryRow>(
@@ -241,7 +268,7 @@ export function openStorage(dbPath: string): Storage {
       const id = uuidv7();
       const createdAt = Date.now();
       const meta = input.meta === undefined ? null : JSON.stringify(input.meta);
-      insertStmt.run(id, createdAt, input.source, input.title, input.content, meta);
+      insertStmt.run(id, createdAt, input.source, input.title, input.content, meta, input.kind);
       return {
         id,
         createdAt,
@@ -355,6 +382,10 @@ export function openStorage(dbPath: string): Storage {
 
     touchClient(clientId) {
       touchClientStmt.run(Date.now(), clientId);
+    },
+
+    getEntryKindForTest(id) {
+      return getKindStmt.get(id)?.kind ?? null;
     },
 
     close() {
