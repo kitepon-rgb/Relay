@@ -21,7 +21,7 @@
 
 > 「この会話を Relay に保存して」
 
-Claude が会話を整え、タイトルを生成し、Relay の `append` を呼ぶ。これだけ。
+Claude が会話を整え、タイトルを生成し、Relay の `append`（要約 OK）または `append_log`（原文ターンを忠実に）を呼ぶ。これだけ。
 
 **PC 側（Claude Code）**
 
@@ -71,13 +71,18 @@ flowchart LR
 
 | ツール | 役割 |
 |---|---|
-| `append` | 会話スニペットを保存（title + content） |
+| `append` | 会話スニペットを自由文で保存（title + content）。要約・メモ向け |
+| `append_log` | 会話の生流れを **構造化ターン配列** で忠実保存。各 `text` は会話原文。単一文字列に逃がさない構造そのものが要約余地を狭める |
 | `list_topics` | タイトル一覧、source / since で絞り込み可 |
 | `read_topic` | タイトル配下のエントリを新しい順で取得 |
 | `search` | 本文 + タイトルの全文検索（FTS5） |
 | `read_recent` | 時系列横断ビュー |
 | `read_by_id` | 単一エントリ取得 |
 | `list_sources` | 登録済み Connector 一覧 |
+
+`append_log` は `content` に `user: ...\n\nassistant: ...` 形式で自然テキスト連結を入れるので、既存の取り出し系ツールは JSON ノイズ無しで普通に表示できる。構造化されたターン配列は `meta.turns` に保持される。
+
+**制限**: ターン数・1 ターンあたりの文字数とも明示的な上限なし。実質天井は HTTP リクエスト body の **10 MB**（[src/index.ts](src/index.ts) の `express.json({ limit: '10mb' })`）。それを超える長会話は同 title で `append_log` を複数回に分割すれば良い（`read_topic` で時系列に取り直せる）。実運用のボトルネックは Relay 側ではなく、書く側 LLM の文脈窓。
 
 意図的に **edit / delete は無い**。append-only。誤って書いてしまったエントリは [retraction append](#誤投稿の取り下げ-retraction) で取り下げる。物理削除（コンプラ用途等）は SQLite を直接編集。
 

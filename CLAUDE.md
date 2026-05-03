@@ -24,13 +24,19 @@ Relay は、iPhone の Claude アプリで行った会話を、ローカルの C
 - `title`: 書く側 Claude が会話内容から生成（日付込み推奨）
 - `id`: サーバー採番の UUID v7
 
-**MCP ツール（7 つ、3 系統）**:
-- 書き込み: `append`
+**MCP ツール（8 つ、3 系統）**:
+- 書き込み: `append`（自由文）, `append_log`（構造化ターン配列）
 - topic 駆動: `list_topics`, `read_topic`
 - 検索駆動: `search`（FTS5）
 - 時系列駆動: `read_recent`
 - 個別: `read_by_id`
 - 管理: `list_sources`
+
+**書き込みツールの使い分け**（書く側 iPhone Claude の運用ガイド。MCP に対話割込みが無いため tool description には書かず、ここにのみ記載）:
+- 雑記・要約でよい場合 → `append`（content は自由文 1 本）
+- 会話の生流れを忠実に残す場合 → `append_log`（turns: 配列で原文ターンごとに渡す。要約禁止。構造そのものが要約余地を狭める唯一の実効的圧力）
+- 受信側は `read_topic` / `search` で取り出した時、`append_log` のエントリは content が `user: ...\n\nassistant: ...` の自然テキスト連結として読める。turn 構造が必要なら `meta.turns` を参照
+- ターン数・文字数とも明示的な上限なし。実質天井は HTTP body 10MB（`src/index.ts` の `express.json({ limit: '10mb' })`）。長会話は同 title で複数 `append_log` に分割可
 
 **Token TTL**:
 - access token: 4h（HS256 JWT）

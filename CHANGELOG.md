@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New tool `append_log` for storing conversations as a structured array of turns. Each turn is `{ role: 'user' | 'assistant' | 'system' | 'tool', text: string }`; the structure is what closes the summarization loophole that a single `content` string left open. The handler joins turns into a natural-text `content` (so existing read tools display logs cleanly with no JSON noise) and preserves the structured turns under `meta.turns` for callers that need them.
+- `entries` table gained a `kind` column (`free` | `log`). Existing rows are backfilled with `'free'` once on first startup; the column has no DB-level CHECK or NOT NULL because SQLite cannot add those after the fact, so the zod enum on `insertEntry` is the sole guarantor going forward. `kind` is internal-only — no existing tool's response shape changes.
+- `Storage.getEntryKindForTest(id)` is exposed on the interface for test verification of the new column. Production code does not call it.
+
+### Changed
+
+- `append`'s description now points users at `append_log` for verbatim conversation transcripts. The schema and response shape are unchanged.
+- `append_log`'s handler is exported as a factory (`buildAppendLogHandler`) and its input schema as `appendLogInputShape` / `appendLogInputObject`, so unit tests can call it without standing up a full MCP server. The other tools remain inline; this asymmetry is a deliberate test-ergonomics tradeoff.
+
 ## [0.1.1] - 2026-05-01
 
 ### Added
