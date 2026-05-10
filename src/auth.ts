@@ -21,7 +21,7 @@ import type {
   OAuthClientInformationFull,
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 
 const ACCESS_TOKEN_TTL_SEC = 60 * 60 * 4;            // 4 hours
 const REFRESH_TOKEN_TTL_SEC = 60 * 60 * 24 * 90;     // 90 days
@@ -386,15 +386,10 @@ class RelayProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    let payload: Awaited<ReturnType<typeof jwtVerify>>['payload'];
-    try {
-      ({ payload } = await jwtVerify(token, this.deps.signingKey, {
-        issuer: this.deps.issuer.href,
-        audience: this.deps.audience.href,
-      }));
-    } catch {
-      throw new InvalidTokenError('Invalid access token');
-    }
+    const { payload } = await jwtVerify(token, this.deps.signingKey, {
+      issuer: this.deps.issuer.href,
+      audience: this.deps.audience.href,
+    });
     if (typeof payload.sub !== 'string') throw new Error('token missing sub');
     const scope = typeof payload.scope === 'string' ? payload.scope : '';
     const info: AuthInfo = {
