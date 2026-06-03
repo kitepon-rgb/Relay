@@ -8,9 +8,9 @@
 [![node](https://img.shields.io/badge/node-22%20LTS-brightgreen)](https://nodejs.org)
 [![mcp](https://img.shields.io/badge/MCP-Streamable%20HTTP-blue)](https://modelcontextprotocol.io)
 
-> セルフホストの MCP サーバ。iPhone の Claude アプリで交わした会話を、デスクトップの Claude Code で続きから再開できる。逆方向も同じ。会話の往復は Claude にやらせて、データは自分で持つ。
+[English](README.md) · **日本語**
 
-[English README →](README.md)
+> セルフホストの MCP サーバ。iPhone の Claude アプリで交わした会話を、デスクトップの Claude Code で続きから再開できる。逆方向も同じ。会話の往復は Claude にやらせて、データは自分で持つ。
 
 ---
 

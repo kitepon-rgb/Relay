@@ -8,9 +8,9 @@
 [![node](https://img.shields.io/badge/node-22%20LTS-brightgreen)](https://nodejs.org)
 [![mcp](https://img.shields.io/badge/MCP-Streamable%20HTTP-blue)](https://modelcontextprotocol.io)
 
-> Self-hosted MCP server. Save a Claude conversation on your iPhone, pick it up on your laptop in Claude Code — and the other way around. Claude does the transfer; you keep the data.
+**English** · [日本語](README.ja.md)
 
-[日本語版 README →](README.ja.md)
+> Self-hosted MCP server. Save a Claude conversation on your iPhone, pick it up on your laptop in Claude Code — and the other way around. Claude does the transfer; you keep the data.
 
 ---
 
